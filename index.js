@@ -33,7 +33,7 @@ app.post('/upload', upload.single('image'), (req, res) => {
   }
 
   // Generate the file URL to return to the client
-  const fileUrl = `http://localhost:3000/uploads/${req.file.filename}`;
+  const fileUrl = `https://image-to-url-3hct.onrender.com/uploads/${req.file.filename}`;
   res.json({ fileUrl });
 });
 
