@@ -1,62 +1,42 @@
 // Required modules
 const express = require('express');
-const mongoose = require('mongoose');
 const multer = require('multer');
-const { GridFsStorage } = require('multer-gridfs-storage');
+const path = require('path');
+const fs = require('fs');
 const cors = require('cors');
-require('dotenv').config(); // Load .env file
 
-// Initialize Express app
 const app = express();
+
+// Enable CORS to handle cross-origin requests (if you're using it with a front-end framework like React)
 app.use(cors());
 
-// MongoDB Atlas Connection
-const mongoURI = process.env.MONGO_URI; // Load from .env
-
-// Connect to MongoDB
-mongoose
-  .connect(mongoURI, { useNewUrlParser: true, useUnifiedTopology: true })
-  .then(() => console.log('MongoDB connected'))
-  .catch((err) => console.error(err));
-
-// Create GridFS storage engine
-const storage = new GridFsStorage({
-  url: mongoURI,
-  file: (req, file) => {
-    return {
-      bucketName: 'uploads', // Collection name in MongoDB
-      filename: `${Date.now()}-${file.originalname}`,
-    };
+// Set up the multer storage configuration
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const uploadPath = path.join(__dirname, 'uploads');
+    fs.existsSync(uploadPath) || fs.mkdirSync(uploadPath); // Create folder if it doesn't exist
+    cb(null, uploadPath); // Save files in the 'uploads' folder
+  },
+  filename: (req, file, cb) => {
+    cb(null, Date.now() + path.extname(file.originalname)); // Unique file name
   },
 });
 
-// Create Multer middleware
+// Create an instance of multer with the storage configuration
 const upload = multer({ storage });
 
-// Upload route
+// Define the upload route
 app.post('/upload', upload.single('image'), (req, res) => {
+  // Check if file is uploaded
   if (!req.file) {
     return res.status(400).json({ error: 'No file uploaded' });
   }
-  res.json({
-    fileUrl: `https://image-to-url-3hct.onrender.com/uploads/${req.file.filename}`,
-  });
-});
 
-// Serve files from MongoDB (optional)
-app.get('/uploads/:filename', async (req, res) => {
-  const { filename } = req.params;
-  const db = mongoose.connection.db;
-  const bucket = new mongoose.mongo.GridFSBucket(db, { bucketName: 'uploads' });
-
-  bucket.find({ filename }).toArray((err, files) => {
-    if (!files || files.length === 0) {
-      return res.status(404).json({ error: 'File not found' });
-    }
-    const downloadStream = bucket.openDownloadStreamByName(filename);
-    downloadStream.pipe(res);
-  });
+  // Generate the file URL to return to the client
+  const fileUrl = `https://image-to-url-3hct.onrender.com/uploads/${req.file.filename}`;
+  res.json({ fileUrl });
 });
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Start the server
 const PORT = process.env.PORT || 3000;
