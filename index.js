@@ -1,76 +1,101 @@
 // Required modules
 const express = require('express');
-const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
-const cors = require('cors');
 const mongoose = require('mongoose');
+const multer = require('multer');
+const { GridFSBucket } = require('mongodb');
+const cors = require('cors');
+require('dotenv').config();
 
 const app = express();
 
-// Enable CORS to handle cross-origin requests (if you're using it with a front-end framework like React)
+// Enable CORS
 app.use(cors());
 
-// MongoDB Connection
-const MONGO_URI = 'mongodb+srv://noorunishaafrin:mynwr1614@cluster0.nermz.mongodb.net/urlgenerate?retryWrites=true&w=majority&appName=Cluster0'; // Replace with your MongoDB connection string
+// MongoDB connection URI (replace with your own)
+const MONGO_URI = process.env.MONGO_URI || 'your_mongo_connection_string';
+
+// Connect to MongoDB
 mongoose
-  .connect(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
+  .connect(MONGO_URI)
   .then(() => console.log('MongoDB connected'))
   .catch((err) => console.error('MongoDB connection error:', err));
 
-// Define a schema and model for uploaded files
-const imageSchema = new mongoose.Schema({
-  filename: String,
-  url: String,
-  uploadedAt: { type: Date, default: Date.now },
+// Initialize GridFSBucket
+const conn = mongoose.connection;
+let bucket;
+
+conn.once('open', () => {
+  bucket = new GridFSBucket(conn.db, { bucketName: 'uploads' });
+  console.log('GridFSBucket initialized');
 });
 
-const Image = mongoose.model('Image', imageSchema);
-
-// Set up the multer storage configuration
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const uploadPath = path.join(__dirname, 'uploads');
-    fs.existsSync(uploadPath) || fs.mkdirSync(uploadPath); // Create folder if it doesn't exist
-    cb(null, uploadPath); // Save files in the 'uploads' folder
-  },
-  filename: (req, file, cb) => {
-    cb(null, Date.now() + path.extname(file.originalname)); // Unique file name
-  },
-});
-
-// Create an instance of multer with the storage configuration
+// Configure multer for file upload
+const storage = multer.memoryStorage(); // Store files in memory temporarily
 const upload = multer({ storage });
 
-// Define the upload route
+// Route to upload a file
 app.post('/upload', upload.single('image'), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'No file uploaded' });
+  }
+
   try {
-    // Check if file is uploaded
-    if (!req.file) {
-      return res.status(400).json({ error: 'No file uploaded' });
-    }
-
-    // Generate the file URL
-    const fileUrl = `https://image-to-url-3hct.onrender.com/uploads/${req.file.filename}`;
-
-    // Save file info in MongoDB
-    const newImage = new Image({
-      filename: req.file.filename,
-      url: fileUrl,
+    const uploadStream = bucket.openUploadStream(req.file.originalname, {
+      contentType: req.file.mimetype,
     });
 
-    await newImage.save();
-
-    // Respond with the file URL
-    res.json({ fileUrl });
+    uploadStream.end(req.file.buffer); // Upload file data from memory
+    uploadStream.on('finish', () => {
+      // Construct the file URL
+      const fileUrl = `${req.protocol}://${req.get('host')}/file/${uploadStream.filename}`;
+      res.status(201).json({
+        message: 'File uploaded successfully',
+        file: {
+          id: uploadStream.id, // MongoDB ObjectId
+          filename: uploadStream.filename,
+          url: fileUrl, // URL to access the uploaded file
+        },
+      });
+    });
   } catch (err) {
     console.error('Error uploading file:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// Serve static files in the uploads folder
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+// Route to fetch a file by filename
+app.get('/file/:filename', async (req, res) => {
+  const { filename } = req.params;
+
+  try {
+    const filesCollection = conn.db.collection('uploads.files');
+    const file = await filesCollection.findOne({ filename });
+
+    if (!file) {
+      return res.status(404).json({ error: 'File not found' });
+    }
+
+    const readStream = bucket.openDownloadStreamByName(filename);
+    res.setHeader('Content-Type', file.contentType);
+    readStream.pipe(res);
+  } catch (err) {
+    console.error('Error fetching file:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Route to delete a file by ID
+app.delete('/file/:id', async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    await bucket.delete(new mongoose.Types.ObjectId(id));
+    res.status(200).json({ message: 'File deleted successfully' });
+  } catch (err) {
+    console.error('Error deleting file:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
 
 // Start the server
 const PORT = process.env.PORT || 3000;
